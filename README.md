@@ -33,14 +33,15 @@ MongoDB starts as replica set `rs0`, which supports transactions. Redis persiste
 
 ## Local development
 
-Start MongoDB and Redis with Docker, copy `.env.example` to `.env`, then install and run the workspaces:
+Copy `.env.example` to `.env`, start only the local infrastructure, then install and run the local applications and processes:
 
 ```sh
+docker compose up -d mongodb redis
 npm install
 npm run dev
 ```
 
-The Vite server runs on port 5173 and proxies `/api` to the API on port 4000. To start processes separately, use `npm run dev:client`, `npm run dev:api`, `npm run dev:worker`, or `npm run dev:scheduler`.
+The Vite server runs on port 5173 and proxies `/api` to the API on port 4000. MongoDB and Redis ports are bound to `127.0.0.1`; the local Node processes connect through `localhost`, while Docker services use the internal service names `mongodb` and `redis`. To start processes separately, use `npm run dev:client`, `npm run dev:api`, `npm run dev:worker`, or `npm run dev:scheduler`.
 
 ## Useful commands
 
