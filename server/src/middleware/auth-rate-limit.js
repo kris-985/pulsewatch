@@ -8,18 +8,23 @@ const INCREMENT_WITH_TTL = `
   return count
 `
 const FAILURE_COOLDOWN_MS = 1_000
-let redisUnavailableUntil = 0
+const cooldownByRedisClient = new WeakMap()
 
-export function createAuthRateLimit({ prefix, max, windowSeconds, includeEmail = false, redisClient = redis, timeoutMs = 1_000 }) {
+export function createAuthRateLimit({ prefix, max, windowSeconds, includeEmail = false, redisClient = redis, timeoutMs = 1_000, now = Date.now }) {
   return async (req, res, next) => {
     const ipHash = createHash('sha256').update(req.ip || 'unknown').digest('hex').slice(0, 24)
     const email = includeEmail ? String(req.validatedBody?.email ?? '').toLowerCase() : ''
     const emailHash = email ? createHash('sha256').update(email).digest('hex').slice(0, 24) : 'none'
-    const bucket = Math.floor(Date.now() / (windowSeconds * 1_000))
+    const bucket = Math.floor(now() / (windowSeconds * 1_000))
     const key = `pulsewatch:auth-limit:${prefix}:${ipHash}:${emailHash}:${bucket}`
 
+    const cooldownUntil = cooldownByRedisClient.get(redisClient) ?? 0
+    if (now() < cooldownUntil) {
+      return next(serviceUnavailable('Authentication rate limiting is temporarily unavailable'))
+    }
+
     try {
-      if (Date.now() < redisUnavailableUntil || redisClient.status !== 'ready') {
+      if (redisClient.status !== 'ready') {
         throw new Error('Redis is not ready')
       }
 
@@ -31,14 +36,20 @@ export function createAuthRateLimit({ prefix, max, windowSeconds, includeEmail =
           timeout = setTimeout(() => reject(new Error('Redis rate-limit command timed out')), timeoutMs)
         }),
       ]).finally(() => clearTimeout(timeout)))
-      redisUnavailableUntil = 0
+      if (now() >= (cooldownByRedisClient.get(redisClient) ?? 0)) {
+        cooldownByRedisClient.delete(redisClient)
+      }
       if (count > max) {
         res.set('Retry-After', String(windowSeconds))
         return res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many authentication attempts', requestId: req.requestId } })
       }
       return next()
     } catch {
-      redisUnavailableUntil = Date.now() + FAILURE_COOLDOWN_MS
+      // A request that was already in flight when another request opened the
+      // cooldown must not extend it when its own Redis operation later fails.
+      if (now() >= (cooldownByRedisClient.get(redisClient) ?? 0)) {
+        cooldownByRedisClient.set(redisClient, now() + FAILURE_COOLDOWN_MS)
+      }
       return next(serviceUnavailable('Authentication rate limiting is temporarily unavailable'))
     }
   }
