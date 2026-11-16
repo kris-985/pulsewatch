@@ -1,0 +1,97 @@
+services:
+  mongodb:
+    image: mongo:8.0
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/rs-init.js:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["npm", "run", "start:api"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/pulsewatch?replicaSet=rs0&directConnection=true
+      REDIS_URL: redis://redis:6379
+      API_PORT: 4000
+    ports:
+      - "4000:4000"
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["npm", "run", "start:worker"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/pulsewatch?replicaSet=rs0&directConnection=true
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["npm", "run", "start:scheduler"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MONGODB_URI: mongodb://mongodb:27017/pulsewatch?replicaSet=rs0&directConnection=true
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--mode", "docker"]
+    environment:
+      VITE_API_BASE_URL: /api/v1
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  mongodb_data:
+  redis_data:

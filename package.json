@@ -1,0 +1,23 @@
+{
+  "name": "pulsewatch",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["client", "server"],
+  "scripts": {
+    "dev": "concurrently -k -n client,api,worker,scheduler -c cyan,green,yellow,magenta \"npm run dev:client\" \"npm run dev:api\" \"npm run dev:worker\" \"npm run dev:scheduler\"",
+    "dev:client": "npm --workspace client run dev -- --host 0.0.0.0",
+    "dev:api": "npm --workspace server run dev:api",
+    "dev:worker": "npm --workspace server run dev:worker",
+    "dev:scheduler": "npm --workspace server run dev:scheduler",
+    "build": "npm --workspace client run build && npm --workspace server run check",
+    "start": "npm run start:api",
+    "start:api": "npm --workspace server run start:api",
+    "start:worker": "npm --workspace server run start:worker",
+    "start:scheduler": "npm --workspace server run start:scheduler",
+    "test": "npm --workspace server test",
+    "lint": "npm --workspace client run lint && npm --workspace server run check"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
