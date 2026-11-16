@@ -33,6 +33,7 @@ describe('authentication HTTP routes', () => {
   beforeEach(() => jest.clearAllMocks())
 
   it('registers an account, creates its workspace response, and keeps refresh token in HttpOnly cookie', async () => {
+    const logSpy = jest.spyOn(console, 'info').mockImplementation(() => {})
     const response = await request(app)
       .post('/api/v1/auth/register')
       .set('Origin', origin)
@@ -42,12 +43,15 @@ describe('authentication HTTP routes', () => {
     expect(service.register).toHaveBeenCalledWith({ name: 'Ada Lovelace', email: 'ada@example.com', password: 'correct horse battery' })
     expect(response.body.workspace.planCode).toBe('free')
     expect(response.body).not.toHaveProperty('refreshToken')
+    expect(response.body.user).not.toHaveProperty('passwordHash')
     const cookies = response.headers['set-cookie']
     const refreshCookie = cookies.find((cookie) => cookie.startsWith('pw_refresh='))
     expect(refreshCookie).toContain('Path=/api/v1/auth')
     expect(refreshCookie).toContain('HttpOnly')
     expect(refreshCookie).toContain('SameSite=Strict')
     expect(cookies.some((cookie) => cookie.startsWith('pw_csrf=') && cookie.includes('Path=/'))).toBe(true)
+    expect(logSpy.mock.calls.flat().join(' ')).not.toContain('correct horse battery')
+    logSpy.mockRestore()
   })
 
   it('logs in and rotates the browser session cookie', async () => {
@@ -128,6 +132,14 @@ describe('authentication HTTP routes', () => {
   })
 
   it('revokes the refresh family and clears session cookies on logout', async () => {
+    const denied = await request(app)
+      .post('/api/v1/auth/logout')
+      .set('Origin', origin)
+      .set('Cookie', 'pw_csrf=csrf-value; pw_refresh=refresh-value')
+      .send({})
+    expect(denied.status).toBe(403)
+    expect(service.logout).not.toHaveBeenCalled()
+
     const response = await request(app)
       .post('/api/v1/auth/logout')
       .set('Origin', origin)

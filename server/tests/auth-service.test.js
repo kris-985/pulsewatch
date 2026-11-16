@@ -4,11 +4,20 @@ import { hashToken } from '../src/security/tokens/jwt.js'
 function createMemoryRepository() {
   const state = { users: [], workspaces: [], tokens: new Map() }
   let userId = 0
+  let transactionTail = Promise.resolve()
 
   return {
     state,
     async withTransaction(operation) {
-      return operation({ memorySession: true })
+      const previousTransaction = transactionTail
+      let release
+      transactionTail = new Promise((resolve) => { release = resolve })
+      await previousTransaction
+      try {
+        return await operation({ memorySession: true })
+      } finally {
+        release()
+      }
     },
     async createUser(data) {
       const user = { _id: `user-${++userId}`, ...data, status: 'active' }
@@ -100,5 +109,24 @@ describe('AuthService', () => {
     await expect(service.refresh(original.refreshToken)).rejects.toMatchObject({ status: 401 })
     expect([...repository.state.tokens.values()].every((token) => token.status === 'revoked')).toBe(true)
     await expect(service.refresh(rotated.refreshToken)).rejects.toMatchObject({ status: 401 })
+  })
+
+  it('treats simultaneous refreshes of one token as reuse and revokes the family', async () => {
+    const repository = createMemoryRepository()
+    const service = new AuthService({
+      repository,
+      passwordHasher: { hash: async (password) => password, compare: async () => true },
+    })
+    const original = await service.register({ name: 'Ada Lovelace', email: 'ada@example.com', password: 'correct horse battery' })
+
+    const results = await Promise.allSettled([
+      service.refresh(original.refreshToken),
+      service.refresh(original.refreshToken),
+    ])
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect(results.find((result) => result.status === 'rejected').reason).toMatchObject({ status: 401 })
+    expect([...repository.state.tokens.values()].every((token) => token.status === 'revoked')).toBe(true)
   })
 })

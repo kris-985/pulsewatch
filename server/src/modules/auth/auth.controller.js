@@ -3,31 +3,37 @@ import { env } from '../../config/env.js'
 import { CSRF_COOKIE, REFRESH_COOKIE, AUTH_COOKIE_PATH, parseCookies } from '../../security/tokens/cookies.js'
 import { authService } from './auth.service.js'
 
-const cookieDefaults = () => ({
-  secure: env.NODE_ENV === 'production',
+const sharedCookieOptions = (nodeEnv) => ({
+  secure: nodeEnv === 'production',
   sameSite: 'strict',
+})
+
+export const getRefreshCookieOptions = (nodeEnv = env.NODE_ENV) => ({
+  ...sharedCookieOptions(nodeEnv),
   path: AUTH_COOKIE_PATH,
+  httpOnly: true,
+})
+
+export const getCsrfCookieOptions = (nodeEnv = env.NODE_ENV) => ({
+  ...sharedCookieOptions(nodeEnv),
+  path: '/',
+  httpOnly: false,
 })
 
 function setSessionCookies(res, result) {
-  const options = cookieDefaults()
   res.cookie(REFRESH_COOKIE, result.refreshToken, {
-    ...options,
-    httpOnly: true,
+    ...getRefreshCookieOptions(),
     maxAge: result.refreshExpiresAt.getTime() - Date.now(),
   })
   res.cookie(CSRF_COOKIE, randomBytes(32).toString('hex'), {
-    ...options,
-    path: '/',
-    httpOnly: false,
+    ...getCsrfCookieOptions(),
     maxAge: result.refreshExpiresAt.getTime() - Date.now(),
   })
 }
 
 function clearSessionCookies(res) {
-  const options = cookieDefaults()
-  res.clearCookie(REFRESH_COOKIE, { ...options, httpOnly: true })
-  res.clearCookie(CSRF_COOKIE, { ...options, path: '/', httpOnly: false })
+  res.clearCookie(REFRESH_COOKIE, getRefreshCookieOptions())
+  res.clearCookie(CSRF_COOKIE, getCsrfCookieOptions())
 }
 
 export function createAuthController(service = authService) {
