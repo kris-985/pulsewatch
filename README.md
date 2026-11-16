@@ -56,6 +56,21 @@ npm run start:scheduler
 
 The worker and scheduler currently validate their MongoDB/Redis connections, log startup, and shut down gracefully; their business algorithms are intentionally not enabled yet.
 
+## Authentication and personal workspace
+
+Registration creates a user, a personal free workspace, and the first refresh-token session in one MongoDB transaction. The available endpoints are:
+
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/auth/me` (requires `Authorization: Bearer <access-token>`)
+- `GET /api/v1/workspaces/current` (requires `Authorization: Bearer <access-token>`)
+
+Passwords use bcrypt with cost 12 and are limited to bcrypt's 72-byte UTF-8 input boundary. Access JWTs expire after 15 minutes. Refresh JWTs rotate on refresh; reuse of an already rotated token revokes its token family. Refresh tokens are only returned as `HttpOnly`, `SameSite=Strict` cookies (also `Secure` in production). Refresh and logout require the CSRF cookie/header pair and an allowlisted Origin. Access tokens are held in client memory, and the client restores a session through the refresh endpoint. After logout, an already-issued access token remains valid until its 15-minute expiry; protected requests do not query session status.
+
+Registration and refresh-session writes require MongoDB transactions, so MongoDB must be running as the configured `rs0` replica set. Unit and HTTP tests use repository/service doubles where the database is unavailable; they do not establish that live MongoDB transactions work. That still requires running the Docker Replica Set and transaction probe.
+
 ## Environment
 
 See `.env.example` for the required variables. The server validates configuration at startup and exits with field-level errors when required values are missing or invalid. Never commit a real `.env` or production secret.

@@ -1,5 +1,8 @@
+import { useEffect, useState } from 'react'
 import { Activity, ArrowUpRight, Check, ChevronRight, Globe2, ShieldCheck, Zap } from 'lucide-react'
-import { API_BASE_URL } from '../lib/config'
+import { AuthPanel } from '../features/auth/AuthPanel'
+import { WorkspaceHome } from '../features/auth/WorkspaceHome'
+import { getMe, refreshSession, type AuthResult } from '../features/auth/api'
 
 const signals = [
   { label: 'API latency', value: '84 ms', change: '−12 ms', width: '76%' },
@@ -7,6 +10,31 @@ const signals = [
 ]
 
 export default function App() {
+  const [authMode, setAuthMode] = useState<'login' | 'register' | null>(null)
+  const [auth, setAuth] = useState<AuthResult | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void refreshSession().then(async (accessToken) => {
+      if (!accessToken) return
+      try {
+        const profile = await getMe()
+        if (active) setAuth({ accessToken, accessTokenTtlSeconds: 900, ...profile })
+      } catch {
+        // A stale session simply returns the visitor to the landing screen.
+      }
+    })
+    return () => { active = false }
+  }, [])
+
+  if (auth) {
+    return <WorkspaceHome user={auth.user} workspace={auth.workspace} onLogout={() => setAuth(null)} />
+  }
+
+  if (authMode) {
+    return <AuthPanel mode={authMode} onBack={() => setAuthMode(null)} onSwitchMode={setAuthMode} onAuthenticated={setAuth} />
+  }
+
   return (
     <main className="min-h-screen overflow-hidden bg-background text-foreground">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_50%_0%,rgba(16,185,129,0.12),transparent_48%)]" />
@@ -19,6 +47,10 @@ export default function App() {
           <span className="hidden items-center gap-2 rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-xs text-zinc-400 sm:flex">
             <span className="size-1.5 rounded-full bg-emerald-400 shadow-[0_0_10px_#34d399]" /> Monitoring foundation
           </span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setAuthMode('login')} className="rounded-lg px-3 py-2 text-sm text-zinc-400 transition hover:text-white">Sign in</button>
+            <button onClick={() => setAuthMode('register')} className="rounded-lg bg-emerald-400 px-3.5 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300">Get started</button>
+          </div>
         </header>
 
         <section id="home" className="grid flex-1 items-center gap-16 py-20 lg:grid-cols-[1.05fr_0.95fr] lg:py-24">
@@ -34,9 +66,9 @@ export default function App() {
               A calm, clear view of your websites. PulseWatch keeps an eye on availability and response times, so you can focus on what comes next.
             </p>
             <div className="mt-9 flex flex-wrap items-center gap-4">
-              <a href={`${API_BASE_URL}/health`} className="group inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300">
-                Check API status <ArrowUpRight size={16} className="transition group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-              </a>
+              <button onClick={() => setAuthMode('register')} className="group inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-5 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300">
+                Create a free account <ArrowUpRight size={16} className="transition group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+              </button>
               <span className="text-sm text-zinc-500">Foundation is online</span>
             </div>
             <div className="mt-12 flex flex-wrap gap-x-7 gap-y-3 border-t border-white/[0.08] pt-6 text-xs text-zinc-500">
