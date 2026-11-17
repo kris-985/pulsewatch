@@ -60,16 +60,18 @@ describe('authentication rate limit counters', () => {
   it('shares the IP counter between login and registration middleware', async () => {
     const redisClient = createMemoryRedis()
     const loginLimit = createAuthRateLimit({
-      prefix: 'login', max: 10, ipMax: 1, windowSeconds: 900,
+      prefix: 'login', ipNamespace: 'auth', max: 10, ipMax: 1, windowSeconds: 900,
       includeEmail: true, redisClient, now: () => 1_000,
     })
     const registrationLimit = createAuthRateLimit({
-      prefix: 'register', max: 8, ipMax: 1, windowSeconds: 900,
+      prefix: 'register', ipNamespace: 'auth', max: 8, ipMax: 1, windowSeconds: 900,
       includeEmail: true, redisClient, now: () => 1_000,
     })
 
     expect((await send(loginLimit, { ip: '192.0.2.10', email: 'one@example.com' })).next).toHaveBeenCalledWith()
     expect((await send(registrationLimit, { ip: '192.0.2.10', email: 'new@example.com' })).res.statusCode).toBe(429)
+    expect(redisClient.eval.mock.calls[0][2]).toBe(redisClient.eval.mock.calls[1][2])
+    expect(redisClient.eval.mock.calls[0][3]).not.toBe(redisClient.eval.mock.calls[1][3])
   })
 
   it('limits one email per IP without coupling that email across different IPs', async () => {

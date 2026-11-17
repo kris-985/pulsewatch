@@ -151,4 +151,24 @@ describe('authentication HTTP routes', () => {
     expect(service.logout).toHaveBeenCalledWith('refresh-value')
     expect(response.headers['set-cookie'].join(';')).toContain('pw_refresh=;')
   })
+
+  it('configures the same atomic IP bucket for every auth mutation and endpoint-specific identity policies', async () => {
+    const policies = []
+    const appWithPolicies = createApp({
+      authService: service,
+      authRateLimit: (policy) => { policies.push(policy); return passRateLimit() },
+      workspaceService,
+    })
+    // Force router construction and inspect the actual policies wired to routes.
+    await request(appWithPolicies).post('/api/v1/auth/logout').set('Origin', origin).send({})
+
+    expect(policies.map(({ prefix }) => prefix)).toEqual(['register', 'login', 'refresh', 'logout'])
+    expect(policies.every(({ ipNamespace, ipMax, windowSeconds }) => ipNamespace === 'auth' && ipMax === 60 && windowSeconds === 900)).toBe(true)
+    expect(policies.find(({ prefix }) => prefix === 'register')).toMatchObject({ max: 8, includeEmail: true })
+    expect(policies.find(({ prefix }) => prefix === 'login')).toMatchObject({ max: 10, includeEmail: true })
+    expect(policies.find(({ prefix }) => prefix === 'refresh')).toMatchObject({ max: 60 })
+    expect(policies.find(({ prefix }) => prefix === 'refresh')).not.toHaveProperty('includeEmail', true)
+    expect(policies.find(({ prefix }) => prefix === 'logout')).toMatchObject({ max: 60 })
+    expect(policies.find(({ prefix }) => prefix === 'logout')).not.toHaveProperty('includeEmail', true)
+  })
 })

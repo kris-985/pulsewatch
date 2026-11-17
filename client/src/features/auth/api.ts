@@ -82,7 +82,11 @@ export async function refreshSession() {
   if (!readCsrfCookie()) return null
   if (refreshInFlight) return refreshInFlight
   refreshInFlight = coordinateRefresh(async () => {
-    const result = await apiRequest<Pick<AuthResult, 'accessToken' | 'accessTokenTtlSeconds'>>('/auth/refresh', { method: 'POST', body: '{}' }, false)
+    const result = await apiRequest<Pick<AuthResult, 'accessToken' | 'accessTokenTtlSeconds'>>('/auth/refresh', {
+      method: 'POST',
+      body: '{}',
+      signal: AbortSignal.timeout(10_000),
+    }, false)
     return result.accessToken
   }).then((accessToken) => {
     setAccessToken(accessToken)

@@ -17,12 +17,12 @@ const INCREMENT_WITH_TTL = `
 const FAILURE_COOLDOWN_MS = 1_000
 const cooldownByRedisClient = new WeakMap()
 
-export function createAuthRateLimit({ prefix, max, ipMax = max, windowSeconds, includeEmail = false, redisClient = redis, timeoutMs = 1_000, now = Date.now }) {
+export function createAuthRateLimit({ prefix, ipNamespace = prefix, max, ipMax = max, windowSeconds, includeEmail = false, redisClient = redis, timeoutMs = 1_000, now = Date.now }) {
   return async (req, res, next) => {
     const ipHash = createHash('sha256').update(req.ip || 'unknown').digest('hex').slice(0, 24)
     const email = includeEmail ? String(req.validatedBody?.email ?? '').toLowerCase() : ''
     const bucket = Math.floor(now() / (windowSeconds * 1_000))
-    const keys = [`pulsewatch:auth-limit:ip:${ipHash}:${bucket}`]
+    const keys = [`pulsewatch:auth-limit:${ipNamespace}:ip:${ipHash}:${bucket}`]
     if (includeEmail) {
       const emailHash = createHash('sha256').update(email).digest('hex').slice(0, 24)
       keys.push(`pulsewatch:auth-limit:${prefix}:identity:${ipHash}:${emailHash}:${bucket}`)

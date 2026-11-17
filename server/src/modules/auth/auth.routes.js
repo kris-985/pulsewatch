@@ -13,10 +13,13 @@ export function createAuthRouter({ service, rateLimit = createAuthRateLimit } = 
   const controller = createAuthController(service)
   const limit = (options) => rateLimit(options)
 
-  router.post('/register', requireAllowedOrigin, validateBody(registerSchema), limit({ prefix: 'register', max: 8, ipMax: 30, windowSeconds: 900, includeEmail: true }), asyncHandler(controller.register))
-  router.post('/login', requireAllowedOrigin, validateBody(loginSchema), limit({ prefix: 'login', max: 10, ipMax: 60, windowSeconds: 900, includeEmail: true }), asyncHandler(controller.login))
-  router.post('/refresh', requireCsrf, limit({ prefix: 'refresh', max: 30, windowSeconds: 900 }), asyncHandler(controller.refresh))
-  router.post('/logout', requireCsrf, asyncHandler(controller.logout))
+  // A single IP bucket is shared across auth endpoints. Endpoint-specific
+  // identity buckets retain their own policies without weakening the IP cap.
+  const ipLimit = { ipNamespace: 'auth', ipMax: 60, windowSeconds: 900 }
+  router.post('/register', requireAllowedOrigin, validateBody(registerSchema), limit({ ...ipLimit, prefix: 'register', max: 8, includeEmail: true }), asyncHandler(controller.register))
+  router.post('/login', requireAllowedOrigin, validateBody(loginSchema), limit({ ...ipLimit, prefix: 'login', max: 10, includeEmail: true }), asyncHandler(controller.login))
+  router.post('/refresh', limit({ ...ipLimit, prefix: 'refresh', max: 60 }), requireCsrf, asyncHandler(controller.refresh))
+  router.post('/logout', limit({ ...ipLimit, prefix: 'logout', max: 60 }), requireCsrf, asyncHandler(controller.logout))
   router.get('/me', authenticate, asyncHandler(controller.me))
 
   return router

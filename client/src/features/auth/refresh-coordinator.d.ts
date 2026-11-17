@@ -4,6 +4,7 @@ export interface RefreshCoordinatorOptions {
   storage?: Storage | null
   now?: () => number
   wait?: (milliseconds: number) => Promise<void>
+  resultWaitMs?: number
   idFactory?: () => string
 }
 
