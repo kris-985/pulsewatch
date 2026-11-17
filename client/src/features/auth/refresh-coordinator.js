@@ -1,141 +1,134 @@
 const LOCK_NAME = 'pulsewatch-auth-refresh-v1'
 const CHANNEL_NAME = 'pulsewatch-auth-refresh-v1'
-const STORAGE_KEY = 'pulsewatch:auth-refresh-state:v1'
 const ELECTION_WINDOW_MS = 60
 const RESULT_WAIT_MS = 2_000
-const RESULT_CACHE_MS = 30_000
+const RESULT_TTL_MS = 10_000
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
 /**
- * Cross-tab single-flight for a rotating refresh cookie. Access tokens travel
- * only in ephemeral BroadcastChannel messages, never through persistent storage.
- * If an outcome is uncertain or result sharing is unavailable, callers fail
- * closed instead of replaying a potentially consumed refresh token.
+ * Coordinates rotating-cookie refreshes between same-origin tabs. A result is
+ * retained only for request IDs explicitly included in that operation's group.
+ * Tokens are never persisted; BroadcastChannel carries access tokens in memory.
  */
 export function createRefreshCoordinator({
   locks = typeof navigator === 'undefined' ? null : navigator.locks,
   createChannel = typeof BroadcastChannel === 'undefined' ? null : (name) => new BroadcastChannel(name),
-  storage,
   now = Date.now,
   wait = delay,
   resultWaitMs = RESULT_WAIT_MS,
   idFactory = () => crypto.randomUUID(),
 } = {}) {
   let inFlight = null
-  let channelInitialized = false
   let channel = null
-  let storageApi = storage
-  let activeId = null
-  let lastCompletion = null
+  let activeGroup = null
   const requests = new Map()
-  const completions = new Map()
+  const completed = new Map()
   const waiters = new Map()
-
-  function hasRecentRequest() {
-    return [...requests.values()].some((at) => now() - at <= RESULT_CACHE_MS)
-  }
+  const votes = new Map()
 
   function prune() {
-    const cutoff = now() - RESULT_CACHE_MS
-    for (const [id, at] of requests) if (at < cutoff) requests.delete(id)
-    for (const [id, result] of completions) if (result.at < cutoff) completions.delete(id)
-    if (lastCompletion?.at < cutoff) lastCompletion = null
+    const cutoff = now() - RESULT_TTL_MS
+    for (const [id, request] of requests) if (request.at < cutoff) requests.delete(id)
+    for (const [id, result] of completed) {
+      if (result.completedAt < cutoff) {
+        clearTimeout(result.timer)
+        completed.delete(id)
+      }
+    }
+    for (const [id, vote] of votes) if (vote.at < cutoff) votes.delete(id)
   }
 
-  function complete(data) {
-    const result = {
-      id: data.id,
-      token: typeof data.token === 'string' ? data.token : null,
-      ok: data.ok === true,
-      at: Number(data.at) || now(),
+  function resolveWaiters(message, skipRequestId = null) {
+    for (const requestId of message.requestIds) {
+      requests.delete(requestId)
+      votes.delete(requestId)
+      if (requestId === skipRequestId && !waiters.has(requestId)) continue
+      const result = { ok: message.ok === true, token: typeof message.token === 'string' ? message.token : null, completedAt: now() }
+      const callbacks = waiters.get(requestId)
+      if (callbacks) {
+        for (const callback of [...callbacks]) callback(result)
+        waiters.delete(requestId)
+      } else {
+        result.timer = setTimeout(() => {
+          if (completed.get(requestId) === result) completed.delete(requestId)
+        }, RESULT_TTL_MS)
+        result.timer?.unref?.()
+        completed.set(requestId, result)
+      }
     }
-    completions.set(result.id, result)
-    lastCompletion = result
     prune()
-    if (activeId === result.id) activeId = null
-    const listeners = waiters.get(result.id)
-    if (listeners) {
-      for (const listener of [...listeners]) listener(result)
-      waiters.delete(result.id)
-    }
+  }
+
+  function addGroupMember(requestId) {
+    if (activeGroup && requestId !== activeGroup.operationId) activeGroup.requestIds.add(requestId)
   }
 
   function initializeChannel() {
-    if (channelInitialized) return channel
-    channelInitialized = true
     try {
       channel = createChannel?.(CHANNEL_NAME) ?? null
       channel?.addEventListener('message', ({ data }) => {
-        if (!data || typeof data !== 'object' || typeof data.id !== 'string' || data.id.length > 128) return
+        if (!data || typeof data !== 'object' || typeof data.type !== 'string') return
         if (data.type === 'refresh-request') {
-          const at = Number(data.at)
-          if (!Number.isFinite(at) || Math.abs(now() - at) > RESULT_CACHE_MS) return
-          requests.set(data.id, at)
+          if (typeof data.id !== 'string' || data.id.length > 128 || !Number.isFinite(data.at)) return
+          requests.set(data.id, { at: data.at })
+          addGroupMember(data.id)
           prune()
-          if (activeId) channel.postMessage({ type: 'refresh-start', id: activeId })
-          else if (lastCompletion && now() - lastCompletion.at <= RESULT_CACHE_MS) {
-            channel.postMessage({ type: 'refresh-complete', id: data.id, token: lastCompletion.token, ok: lastCompletion.ok, at: lastCompletion.at })
-          }
-        } else if (data.type === 'refresh-vote') {
-          const at = Number(data.at)
-          if (!Number.isFinite(at) || Math.abs(now() - at) > RESULT_CACHE_MS || !Array.isArray(data.ids)) return
-          for (const candidate of data.ids) {
-            if (typeof candidate === 'string' && candidate.length <= 128 && !requests.has(candidate)) requests.set(candidate, at)
-          }
         } else if (data.type === 'refresh-start') {
-          if (requests.has(data.id) || hasRecentRequest()) activeId = data.id
+          if (typeof data.operationId !== 'string' || !Array.isArray(data.requestIds)) return
+          activeGroup = { operationId: data.operationId, requestIds: new Set(data.requestIds.filter((id) => typeof id === 'string')) }
         } else if (data.type === 'refresh-complete') {
-          if (requests.has(data.id) || waiters.has(data.id) || activeId === data.id || hasRecentRequest()) complete(data)
+          if (typeof data.operationId !== 'string' || !Array.isArray(data.requestIds)) return
+          const requestIds = data.requestIds.filter((id) => typeof id === 'string' && id.length <= 128)
+          if (!requestIds.length) return
+          resolveWaiters({ ...data, requestIds })
+          if (activeGroup?.operationId === data.operationId) activeGroup = null
+        } else if (data.type === 'refresh-vote') {
+          if (typeof data.voterId !== 'string' || data.voterId.length > 128 || !Array.isArray(data.requestIds)) return
+          const at = Number(data.at)
+          if (!Number.isFinite(at)) return
+          const requestIds = data.requestIds.filter((id) => typeof id === 'string' && id.length <= 128).sort()
+          votes.set(data.voterId, { at, requestIds })
         }
       })
     } catch {
       channel = null
     }
-    return channel
   }
 
-  function getStorage() {
-    if (storageApi === undefined) {
-      try { storageApi = globalThis.localStorage ?? null } catch { storageApi = null }
+  function waitFor(requestId) {
+    const prior = completed.get(requestId)
+    if (prior) {
+      clearTimeout(prior.timer)
+      completed.delete(requestId)
+      return Promise.resolve(prior)
     }
-    return storageApi
-  }
-
-  function readMarker() {
-    const store = getStorage()
-    if (!store) return null
-    try {
-      const raw = store.getItem(STORAGE_KEY)
-      if (!raw) return null
-      const parsed = JSON.parse(raw)
-      return typeof parsed.id === 'string' && typeof parsed.at === 'number' ? parsed : null
-    } catch {
-      storageApi = null
-      return null
-    }
-  }
-
-  function waitFor(id, timeoutMs = resultWaitMs) {
-    if (completions.has(id)) return Promise.resolve(completions.get(id))
     return new Promise((resolve) => {
-      let listeners = waiters.get(id)
-      if (!listeners) {
-        listeners = new Set()
-        waiters.set(id, listeners)
+      let callbacks = waiters.get(requestId)
+      if (!callbacks) {
+        callbacks = new Set()
+        waiters.set(requestId, callbacks)
       }
-      const finish = (value) => {
+      const finish = (result) => {
         clearTimeout(timer)
-        listeners.delete(finish)
-        if (listeners.size === 0) waiters.delete(id)
-        resolve(value)
+        callbacks.delete(finish)
+        if (callbacks.size === 0) waiters.delete(requestId)
+        resolve(result)
       }
-      listeners.add(finish)
-      const timer = setTimeout(() => finish(null), timeoutMs)
+      callbacks.add(finish)
+      const timer = setTimeout(() => finish(null), resultWaitMs)
     })
   }
 
-  async function perform(operation, id, requestedAt, bus) {
+  function eligibleRequests(requestId, requestedAt) {
+    const minimumTime = requestedAt - ELECTION_WINDOW_MS
+    for (const [id, request] of requests) if (request.at < minimumTime) requests.delete(id)
+    return [...new Set([requestId, ...[...requests.entries()]
+      .filter(([, request]) => request.at >= minimumTime && request.at <= requestedAt + ELECTION_WINDOW_MS)
+      .map(([id]) => id)])].sort()
+  }
+
+  async function perform(operation, operationId, requestIds) {
     let token = null
     let ok = false
     try {
@@ -143,105 +136,83 @@ export function createRefreshCoordinator({
       ok = typeof token === 'string' && token.length > 0
       return ok ? token : null
     } catch {
-      // The request may have rotated the server cookie even if the response
-      // was lost. Never retry it from another tab; callers must fail closed.
+      // A lost response can follow a committed rotation. Never retry it here.
       return null
     } finally {
-      const result = { type: 'refresh-complete', id, token: ok ? token : null, ok, at: now() }
-      complete(result)
-      if (bus) bus.postMessage(result)
-      else {
-        const store = getStorage()
-        if (store) {
-          try { store.setItem(STORAGE_KEY, JSON.stringify({ id, at: result.at, pending: false })) } catch { storageApi = null }
-        }
-      }
+      const group = activeGroup?.operationId === operationId
+        ? [...activeGroup.requestIds]
+        : [...requestIds]
+      const completedMessage = { type: 'refresh-complete', operationId, requestIds: group, ok, token: ok ? token : null }
+      resolveWaiters(completedMessage, operationId)
+      channel?.postMessage(completedMessage)
+      activeGroup = null
     }
   }
 
-  async function withWebLock(operation, id, requestedAt, bus) {
-    return locks.request(LOCK_NAME, { mode: 'exclusive' }, async (lock) => {
-      if (!lock) return null
-
-      // Let same-turn peers announce their 401 before deciding whether this
-      // lock holder is the refresh leader.
-      await wait(ELECTION_WINDOW_MS)
-
-      if (bus) {
-        if (lastCompletion && now() - lastCompletion.at <= RESULT_CACHE_MS) {
-          return lastCompletion.ok ? lastCompletion.token : null
-        }
-        if (activeId && activeId !== id) {
-          const result = await waitFor(activeId)
-          return result?.ok ? result.token : null
-        }
-        activeId = id
-        bus.postMessage({ type: 'refresh-start', id })
-        return perform(operation, id, requestedAt, bus)
+  async function withWebLock(operation, operationId, requestedAt) {
+    return locks.request(LOCK_NAME, { mode: 'exclusive', ifAvailable: true }, async (lock) => {
+      if (!lock) {
+        // A busy lock means another tab owns this attempt. Without a channel,
+        // fail closed. With one, wait only for this request's group result.
+        return channel ? (await waitFor(operationId))?.token ?? null : null
       }
 
-      // Web Locks alone cannot share the access token. Require durable metadata
-      // to detect a predecessor; if storage is unavailable, do not send a request.
-      const store = getStorage()
-      if (!store) return null
-      const marker = readMarker()
-      if (marker && marker.at >= requestedAt) return null
-      try { store.setItem(STORAGE_KEY, JSON.stringify({ id, at: requestedAt, pending: true })) } catch { storageApi = null; return null }
-      return perform(operation, id, requestedAt, null)
+      await wait(ELECTION_WINDOW_MS)
+      const priorResult = completed.get(operationId)
+      if (priorResult) return priorResult.ok ? priorResult.token : null
+      const requestIds = eligibleRequests(operationId, requestedAt)
+      activeGroup = { operationId, requestIds: new Set(requestIds) }
+      channel?.postMessage({ type: 'refresh-start', operationId, requestIds })
+      return perform(operation, operationId, requestIds)
     })
   }
 
-  async function withoutWebLock(operation, id, requestedAt, bus) {
-    if (!bus) return null
-    if (lastCompletion && now() - lastCompletion.at <= RESULT_CACHE_MS) {
-      return lastCompletion.ok ? lastCompletion.token : null
-    }
-    if (activeId && activeId !== id) {
-      const result = await waitFor(activeId)
-      return result?.ok ? result.token : null
-    }
-
-    requests.set(id, requestedAt)
-    bus.postMessage({ type: 'refresh-request', id, at: requestedAt })
+  async function withoutWebLock(operation, operationId, requestedAt) {
+    // BroadcastChannel cannot atomically claim a lock. Require every candidate
+    // in the observed group to publish the same membership view before electing.
+    if (!channel) return null
     await wait(ELECTION_WINDOW_MS)
-    if (activeId && activeId !== id) {
-      const result = await waitFor(activeId)
-      return result?.ok ? result.token : null
+    const priorResult = completed.get(operationId)
+    if (priorResult) return priorResult.ok ? priorResult.token : null
+    if (activeGroup && activeGroup.operationId !== operationId) {
+      return (await waitFor(operationId))?.token ?? null
     }
 
-    const cutoff = requestedAt - ELECTION_WINDOW_MS
-    for (const [requestId, at] of requests) if (at < cutoff) requests.delete(requestId)
-    bus.postMessage({ type: 'refresh-vote', at: requestedAt, ids: [...requests.keys()] })
+    const requestIds = eligibleRequests(operationId, requestedAt)
+    votes.set(operationId, { at: requestedAt, requestIds })
+    channel.postMessage({ type: 'refresh-vote', voterId: operationId, at: requestedAt, requestIds })
     await wait(ELECTION_WINDOW_MS)
-    const candidates = [...requests.entries()].filter(([, at]) => at >= cutoff).map(([requestId]) => requestId)
-    const winner = [...new Set([...candidates, id])].sort()[0]
-    if (winner !== id) {
-      const result = await waitFor(winner)
-      return result?.ok ? result.token : null
-    }
+    const afterElectionResult = completed.get(operationId)
+    if (afterElectionResult) return afterElectionResult.ok ? afterElectionResult.token : null
+    if (activeGroup && activeGroup.operationId !== operationId) return (await waitFor(operationId))?.token ?? null
+    const candidates = eligibleRequests(operationId, requestedAt)
+    const candidateSet = new Set(candidates)
+    const candidateVotes = candidates.map((candidate) => votes.get(candidate))
+    if (candidateVotes.some((vote) => !vote || Math.abs(vote.at - requestedAt) > ELECTION_WINDOW_MS)) return null
+    if (candidateVotes.some((vote) => vote.requestIds.length !== candidateSet.size || vote.requestIds.some((id) => !candidateSet.has(id)))) return null
+    const leaderId = candidates[0]
+    if (leaderId !== operationId) return (await waitFor(operationId))?.token ?? null
 
-    activeId = id
-    bus.postMessage({ type: 'refresh-start', id })
-    return perform(operation, id, requestedAt, bus)
+    activeGroup = { operationId, requestIds: new Set(candidates) }
+    channel.postMessage({ type: 'refresh-start', operationId, requestIds: candidates })
+    return perform(operation, operationId, candidates)
   }
 
-  // Subscribe when the app initializes so tabs that later refresh together have
-  // already joined the shared channel before any one of them starts a request.
+  // Subscribe during application initialization so tabs already share a channel
+  // before a concurrent 401 group begins.
   initializeChannel()
 
   return function coordinateRefresh(operation) {
     if (inFlight) return inFlight
     prune()
-    const bus = initializeChannel()
-    const id = idFactory()
+    const operationId = idFactory()
     const requestedAt = now()
-    if (bus) {
-      requests.set(id, requestedAt)
-      bus.postMessage({ type: 'refresh-request', id, at: requestedAt })
-    }
+    requests.set(operationId, { at: requestedAt })
+    channel?.postMessage({ type: 'refresh-request', id: operationId, at: requestedAt })
+
     const task = locks?.request
-      ? withWebLock(operation, id, requestedAt, bus)
-      : withoutWebLock(operation, id, requestedAt, bus)
+      ? withWebLock(operation, operationId, requestedAt)
+      : withoutWebLock(operation, operationId, requestedAt)
     inFlight = Promise.resolve(task).finally(() => { inFlight = null })
     return inFlight
   }
