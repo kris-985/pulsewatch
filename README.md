@@ -29,19 +29,19 @@ docker/    MongoDB replica set initialization
 3. Open the client at http://localhost:5173.
 4. Check API liveness at http://localhost:4000/api/v1/health and readiness at http://localhost:4000/api/v1/ready.
 
-MongoDB starts as replica set `rs0`, which supports transactions. Redis persistence is enabled with AOF. Docker Compose waits for MongoDB/Redis health before starting the API, worker, and scheduler.
+MongoDB starts as replica set `rs0`, which supports transactions. A one-shot `mongo-rs-init` service waits for MongoDB connectivity, initializes `rs0` only when needed, and waits for a PRIMARY with logical sessions enabled. API, worker, and scheduler wait for both successful initialization and MongoDB's PRIMARY healthcheck. Redis persistence is enabled with AOF. Existing MongoDB volumes are retained; a volume configured with a different replica set name causes initialization to fail without modifying it.
 
 ## Local development
 
 Copy `.env.example` to `.env`, start only the local infrastructure, then install and run the local applications and processes:
 
 ```sh
-docker compose up -d mongodb redis
+docker compose up -d mongodb redis mongo-rs-init
 npm install
 npm run dev
 ```
 
-The Vite server runs on port 5173 and proxies `/api` to the API on port 4000. MongoDB and Redis ports are bound to `127.0.0.1`; the local Node processes connect through `localhost`, while Docker services use the internal service names `mongodb` and `redis`. To start processes separately, use `npm run dev:client`, `npm run dev:api`, `npm run dev:worker`, or `npm run dev:scheduler`.
+Before starting local processes, wait until `docker compose ps` reports `mongodb` as healthy and `mongo-rs-init` as exited successfully. The Vite server runs on port 5173 and proxies `/api` to the API on port 4000. MongoDB and Redis ports are bound to `127.0.0.1`; the local Node processes connect through `localhost`, while Docker services use the internal service names `mongodb` and `redis`. To start processes separately, use `npm run dev:client`, `npm run dev:api`, `npm run dev:worker`, or `npm run dev:scheduler`.
 
 ## Useful commands
 

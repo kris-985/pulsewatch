@@ -9,8 +9,7 @@ healthRouter.get('/health', (_req, res) => {
 })
 
 healthRouter.get('/ready', async (_req, res) => {
-  const [redisReady] = await Promise.all([isRedisReady()])
-  const mongoReady = isMongoReady()
+  const [mongoReady, redisReady] = await Promise.all([isMongoReady(), isRedisReady()])
   const ready = mongoReady && redisReady
 
   res.status(ready ? 200 : 503).json({

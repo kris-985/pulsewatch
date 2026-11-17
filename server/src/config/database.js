@@ -2,9 +2,18 @@ import mongoose from 'mongoose'
 import { env } from './env.js'
 
 export async function connectMongo() {
-  if (mongoose.connection.readyState === 1) return mongoose.connection
-  await mongoose.connect(env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
-  return mongoose.connection
+  if (mongoose.connection.readyState !== 1) {
+    await mongoose.connect(env.MONGODB_URI, { serverSelectionTimeoutMS: 5000 })
+  }
+  const connection = mongoose.connection
+
+  try {
+    await assertMongoTransactionReady(connection)
+    return connection
+  } catch (error) {
+    await mongoose.disconnect()
+    throw error
+  }
 }
 
 export async function disconnectMongo() {
@@ -29,6 +38,23 @@ export async function withMongoTransaction(operation) {
   }
 }
 
-export function isMongoReady() {
-  return mongoose.connection.readyState === 1
+async function assertMongoTransactionReady(connection) {
+  const hello = await connection.db.admin().command({ hello: 1 })
+  if (
+    hello.setName !== 'rs0'
+    || hello.isWritablePrimary !== true
+    || typeof hello.logicalSessionTimeoutMinutes !== 'number'
+  ) {
+    throw new Error('MongoDB replica set rs0 is not PRIMARY and transaction-ready')
+  }
+}
+
+export async function isMongoReady() {
+  if (mongoose.connection.readyState !== 1) return false
+  try {
+    await assertMongoTransactionReady(mongoose.connection)
+    return true
+  } catch {
+    return false
+  }
 }

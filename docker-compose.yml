@@ -7,13 +7,26 @@ services:
       - "127.0.0.1:27017:27017"
     volumes:
       - mongodb_data:/data/db
-      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/rs-init.js:ro
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep true"]
+      test: ["CMD", "mongosh", "mongodb://127.0.0.1:27017/admin?directConnection=true", "--quiet", "--eval", "const h = db.hello(); quit(h.setName === 'rs0' && h.isWritablePrimary === true && typeof h.logicalSessionTimeoutMinutes === 'number' ? 0 : 1)"]
       interval: 5s
       timeout: 5s
-      retries: 30
-      start_period: 5s
+      retries: 24
+      start_period: 120s
+
+  mongo-rs-init:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    entrypoint: ["node"]
+    command: ["/app/docker/mongo-init.js"]
+    restart: "no"
+    environment:
+      MONGODB_BOOTSTRAP_URI: mongodb://mongodb:27017/admin?directConnection=true
+    volumes:
+      - ./docker/mongo-init.js:/app/docker/mongo-init.js:ro
+    depends_on:
+      mongodb: { condition: service_started }
 
   redis:
     image: redis:7-alpine
@@ -45,6 +58,7 @@ services:
     depends_on:
       mongodb: { condition: service_healthy }
       redis: { condition: service_healthy }
+      mongo-rs-init: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
@@ -64,6 +78,7 @@ services:
     depends_on:
       mongodb: { condition: service_healthy }
       redis: { condition: service_healthy }
+      mongo-rs-init: { condition: service_completed_successfully }
 
   scheduler:
     build:
@@ -78,6 +93,7 @@ services:
     depends_on:
       mongodb: { condition: service_healthy }
       redis: { condition: service_healthy }
+      mongo-rs-init: { condition: service_completed_successfully }
 
   client:
     build:
