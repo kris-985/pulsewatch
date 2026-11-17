@@ -87,6 +87,27 @@ describe('MongoDB replica set initialization', () => {
     await expect(ensureReplicaSet({ admin })).rejects.toThrow('MongoDB replica set initialization failed (InvalidReplicaSetConfig)')
   })
 
+  it('times out if rs0 never reaches PRIMARY', async () => {
+    const clock = createFakeClock()
+    const admin = {
+      command: jest.fn().mockResolvedValue({
+        ok: 1,
+        setName: 'rs0',
+        isWritablePrimary: false,
+        logicalSessionTimeoutMinutes: 30,
+      }),
+    }
+
+    await expect(ensureReplicaSet({
+      admin,
+      timeoutMs: 1_000,
+      now: clock.now,
+      wait: clock.wait,
+    })).rejects.toThrow('did not become transaction-ready before the 1000ms deadline')
+
+    expect(admin.command).toHaveBeenCalledTimes(2)
+  })
+
   it('does not reinitialize when another initializer already configured rs0', async () => {
     const admin = {
       command: jest.fn(async (command) => {

@@ -87,7 +87,7 @@ describe('authentication hardening', () => {
       status: 'ready',
       eval: jest.fn()
         .mockRejectedValueOnce(new Error('Redis unavailable'))
-        .mockResolvedValueOnce(1),
+        .mockResolvedValueOnce([1, 0]),
     }
     const middleware = createAuthRateLimit({ prefix: 'no-extension', max: 2, windowSeconds: 60, redisClient, now: () => currentTime })
     const firstNext = jest.fn()
@@ -115,8 +115,8 @@ describe('authentication hardening', () => {
       status: 'ready',
       eval: jest.fn()
         .mockRejectedValueOnce(new Error('Redis unavailable'))
-        .mockResolvedValueOnce(1)
-        .mockResolvedValueOnce(2),
+        .mockResolvedValueOnce([1, 1])
+        .mockResolvedValueOnce([2, 2]),
     }
     const middleware = createAuthRateLimit({ prefix: 'recovery', max: 1, windowSeconds: 60, redisClient, now: () => currentTime })
     const failedNext = jest.fn()

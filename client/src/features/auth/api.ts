@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '../../lib/config'
+import { createRefreshCoordinator } from './refresh-coordinator.js'
 
 export interface AuthIdentity {
   id: string
@@ -26,6 +27,7 @@ export interface MeResult {
 
 let currentAccessToken: string | null = null
 let refreshInFlight: Promise<string | null> | null = null
+const coordinateRefresh = createRefreshCoordinator()
 
 export function setAccessToken(token: string | null) {
   currentAccessToken = token
@@ -79,18 +81,18 @@ export async function login(input: { email: string; password: string }) {
 export async function refreshSession() {
   if (!readCsrfCookie()) return null
   if (refreshInFlight) return refreshInFlight
-  refreshInFlight = (async () => {
-    try {
-      const result = await apiRequest<Pick<AuthResult, 'accessToken' | 'accessTokenTtlSeconds'>>('/auth/refresh', { method: 'POST', body: '{}' }, false)
-      setAccessToken(result.accessToken)
-      return result.accessToken
-    } catch {
-      setAccessToken(null)
-      return null
-    } finally {
-      refreshInFlight = null
-    }
-  })()
+  refreshInFlight = coordinateRefresh(async () => {
+    const result = await apiRequest<Pick<AuthResult, 'accessToken' | 'accessTokenTtlSeconds'>>('/auth/refresh', { method: 'POST', body: '{}' }, false)
+    return result.accessToken
+  }).then((accessToken) => {
+    setAccessToken(accessToken)
+    return accessToken
+  }).catch(() => {
+    setAccessToken(null)
+    return null
+  }).finally(() => {
+    refreshInFlight = null
+  })
   return refreshInFlight
 }
 
