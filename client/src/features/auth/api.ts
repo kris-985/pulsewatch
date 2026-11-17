@@ -1,5 +1,5 @@
 import { API_BASE_URL } from '../../lib/config'
-import { createRefreshCoordinator } from './refresh-coordinator.js'
+import { createRefreshCoordinator, REFRESH_HTTP_TIMEOUT_MS } from './refresh-coordinator.js'
 
 export interface AuthIdentity {
   id: string
@@ -85,7 +85,7 @@ export async function refreshSession() {
     const result = await apiRequest<Pick<AuthResult, 'accessToken' | 'accessTokenTtlSeconds'>>('/auth/refresh', {
       method: 'POST',
       body: '{}',
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(REFRESH_HTTP_TIMEOUT_MS),
     }, false)
     return result.accessToken
   }).then((accessToken) => {

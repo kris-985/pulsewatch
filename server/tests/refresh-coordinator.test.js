@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals'
-import { createRefreshCoordinator } from '../../client/src/features/auth/refresh-coordinator.js'
+import { createRefreshCoordinator, REFRESH_HTTP_TIMEOUT_MS } from '../../client/src/features/auth/refresh-coordinator.js'
 
 function createBroadcastHub() {
   const peers = []
@@ -100,6 +100,88 @@ describe('cross-tab refresh coordination', () => {
     })
     expect(result.fetchCount).toBe(1)
     expect(result.results).toEqual(['rotated-access-token', 'rotated-access-token'])
+  })
+
+  it('shares a response delayed beyond two seconds with the joined tab and sends one HTTP request', async () => {
+      const createChannel = createBroadcastHub()
+      const locks = createWebLocks()
+      const options = { locks, createChannel, wait: async () => {}, resultWaitMs: REFRESH_HTTP_TIMEOUT_MS + 2_000 }
+      const tabA = createRefreshCoordinator({ ...options, idFactory: () => 'delayed-a' })
+      const tabB = createRefreshCoordinator({ ...options, idFactory: () => 'delayed-b' })
+      let resolveResponse
+      let reportStarted
+      const responseStarted = new Promise((resolve) => { reportStarted = resolve })
+      const fetchImpl = jest.fn(() => {
+        reportStarted()
+        return new Promise((resolve) => { resolveResponse = resolve })
+      })
+      const request = async () => {
+        const response = await fetchImpl('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' })
+        return (await response.json()).accessToken
+      }
+
+      const firstPending = tabA(request)
+      await responseStarted
+      const secondPending = tabB(request)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+      await new Promise((resolve) => setTimeout(resolve, 2_500))
+      resolveResponse({ ok: true, json: async () => ({ accessToken: 'shared-delayed-token' }) })
+      await expect(Promise.all([firstPending, secondPending])).resolves.toEqual([
+        'shared-delayed-token',
+        'shared-delayed-token',
+      ])
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+  }, 10_000)
+
+  it('shares an HTTP timeout failure without retrying the rotating refresh cookie', async () => {
+    jest.useFakeTimers()
+    try {
+      const createChannel = createBroadcastHub()
+      const options = {
+        locks: createWebLocks(),
+        createChannel,
+        wait: async () => {},
+        resultWaitMs: REFRESH_HTTP_TIMEOUT_MS + 2_000,
+      }
+      const tabA = createRefreshCoordinator({ ...options, idFactory: () => 'timeout-a' })
+      const tabB = createRefreshCoordinator({ ...options, idFactory: () => 'timeout-b' })
+      let reportStarted
+      const requestStarted = new Promise((resolve) => { reportStarted = resolve })
+      const fetchImpl = jest.fn((_url, { signal }) => {
+        reportStarted()
+        return new Promise((_resolve, reject) => {
+          const fail = () => reject(Object.assign(new Error('request timed out'), { name: 'TimeoutError' }))
+          if (signal.aborted) fail()
+          else signal.addEventListener('abort', fail, { once: true })
+        })
+      })
+      const request = async () => {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), REFRESH_HTTP_TIMEOUT_MS)
+        try {
+          const response = await fetchImpl('/api/v1/auth/refresh', { method: 'POST', credentials: 'include', signal: controller.signal })
+          return response.ok ? (await response.json()).accessToken : null
+        } finally {
+          clearTimeout(timeout)
+        }
+      }
+
+      const firstPending = tabA(request)
+      await requestStarted
+      const secondPending = tabB(request)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      await jest.advanceTimersByTimeAsync(REFRESH_HTTP_TIMEOUT_MS)
+      await expect(Promise.all([firstPending, secondPending])).resolves.toEqual([null, null])
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+      expect(jest.getTimerCount()).toBe(0)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   it.each([2, 5])('sends exactly one refresh request for %i tabs using BroadcastChannel fallback', async (count) => {

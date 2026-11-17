@@ -1,3 +1,5 @@
+export const REFRESH_HTTP_TIMEOUT_MS: number
+
 export interface RefreshCoordinatorOptions {
   locks?: { request<T>(name: string, options: { mode: 'exclusive' }, callback: () => Promise<T>): Promise<T> } | null
   createChannel?: ((name: string) => BroadcastChannel) | null

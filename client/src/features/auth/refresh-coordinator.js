@@ -1,7 +1,9 @@
 const LOCK_NAME = 'pulsewatch-auth-refresh-v1'
 const CHANNEL_NAME = 'pulsewatch-auth-refresh-v1'
 const ELECTION_WINDOW_MS = 60
-const RESULT_WAIT_MS = 2_000
+export const REFRESH_HTTP_TIMEOUT_MS = 10_000
+const RESULT_SHARING_GRACE_MS = 2_000
+const RESULT_WAIT_MS = REFRESH_HTTP_TIMEOUT_MS + RESULT_SHARING_GRACE_MS
 const RESULT_TTL_MS = 10_000
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -23,6 +25,7 @@ export function createRefreshCoordinator({
   let channel = null
   let activeGroup = null
   const requests = new Map()
+  const localRequestIds = new Set()
   const completed = new Map()
   const waiters = new Map()
   const votes = new Map()
@@ -34,6 +37,7 @@ export function createRefreshCoordinator({
       if (result.completedAt < cutoff) {
         clearTimeout(result.timer)
         completed.delete(id)
+        localRequestIds.delete(id)
       }
     }
     for (const [id, vote] of votes) if (vote.at < cutoff) votes.delete(id)
@@ -49,9 +53,13 @@ export function createRefreshCoordinator({
       if (callbacks) {
         for (const callback of [...callbacks]) callback(result)
         waiters.delete(requestId)
-      } else {
+        localRequestIds.delete(requestId)
+      } else if (localRequestIds.has(requestId)) {
         result.timer = setTimeout(() => {
-          if (completed.get(requestId) === result) completed.delete(requestId)
+          if (completed.get(requestId) === result) {
+            completed.delete(requestId)
+            localRequestIds.delete(requestId)
+          }
         }, RESULT_TTL_MS)
         result.timer?.unref?.()
         completed.set(requestId, result)
@@ -101,6 +109,7 @@ export function createRefreshCoordinator({
     if (prior) {
       clearTimeout(prior.timer)
       completed.delete(requestId)
+      localRequestIds.delete(requestId)
       return Promise.resolve(prior)
     }
     return new Promise((resolve) => {
@@ -113,6 +122,7 @@ export function createRefreshCoordinator({
         clearTimeout(timer)
         callbacks.delete(finish)
         if (callbacks.size === 0) waiters.delete(requestId)
+        if (result === null) localRequestIds.delete(requestId)
         resolve(result)
       }
       callbacks.add(finish)
@@ -208,6 +218,7 @@ export function createRefreshCoordinator({
     const operationId = idFactory()
     const requestedAt = now()
     requests.set(operationId, { at: requestedAt })
+    localRequestIds.add(operationId)
     channel?.postMessage({ type: 'refresh-request', id: operationId, at: requestedAt })
 
     const task = locks?.request
