@@ -77,6 +77,10 @@ describe('Monitor URL policy', () => {
     '172.16.0.1',
     '192.168.1.1',
     '198.51.100.1',
+    '198.18.0.1',
+    '192.175.48.1',
+    '192.31.196.1',
+    '192.52.193.1',
     '224.0.0.1',
     '255.255.255.255',
     '::',
@@ -85,12 +89,28 @@ describe('Monitor URL policy', () => {
     'fe80::1',
     'ff02::1',
     '2001:db8::1',
+    '2001:2::1',
+    '2001:20::1',
+    '100::1',
+    '3fff::1',
+    '5f00::1',
+    '64:ff9b:1::1',
+    'fec0::1',
+    '2620:4f:8000::1',
     '::ffff:127.0.0.1',
+    '::ffff:192.168.1.1',
+    '::ffff:198.18.0.1',
+    '::ffff:c612:1',
   ])('classifies non-public IP %s as blocked', (address) => {
     expect(isPublicIpAddress(address)).toBe(false)
   })
 
-  it.each(['8.8.8.8', '2606:4700:4700::1111', '::ffff:8.8.8.8'])('classifies public IP %s as public', (address) => {
+  it.each([
+    '8.8.8.8',
+    '2606:4700:4700::1111',
+    '::ffff:8.8.8.8',
+    '::ffff:808:808',
+  ])('classifies public IP %s as public', (address) => {
     expect(isPublicIpAddress(address)).toBe(true)
   })
 
