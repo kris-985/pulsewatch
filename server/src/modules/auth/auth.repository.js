@@ -3,7 +3,7 @@ import { SessionToken } from './session-token.model.js'
 import * as userRepository from '../users/user.repository.js'
 import * as workspaceRepository from '../workspaces/workspace.repository.js'
 
-export { withMongoTransaction }
+export { withMongoTransaction, withMongoTransaction as withTransaction }
 export const findUserByEmail = userRepository.findUserByEmail
 export const findUserById = userRepository.findUserById
 export const createUser = userRepository.createUser
